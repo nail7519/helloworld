@@ -1,13 +1,24 @@
 import os
+import re
 import random
+import urllib.request
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# Quotes – humorous, philosophical, optimistic
+# Quotes – loaded at startup from fortune-mod on GitHub
+# Falls back to built-in list if the network is unavailable.
 # ---------------------------------------------------------------------------
-QUOTES = [
+
+# fortune-mod raw files on GitHub (wisdom + humorists + general fortunes)
+_FORTUNE_URLS = [
+    "https://raw.githubusercontent.com/shlomif/fortune-mod/master/fortune-mod/datfiles/wisdom",
+    "https://raw.githubusercontent.com/shlomif/fortune-mod/master/fortune-mod/datfiles/humorists",
+    "https://raw.githubusercontent.com/shlomif/fortune-mod/master/fortune-mod/datfiles/fortunes",
+]
+
+_FALLBACK_QUOTES = [
     ("The secret of getting ahead is getting started.", "Mark Twain"),
     ("I love deadlines. I love the whooshing noise they make as they go by.", "Douglas Adams"),
     ("Two things are infinite: the universe and human stupidity; and I'm not sure about the universe.", "Albert Einstein"),
@@ -16,44 +27,79 @@ QUOTES = [
     ("If at first you don't succeed, skydiving is definitely not for you.", "Steven Wright"),
     ("A day without laughter is a day wasted.", "Charlie Chaplin"),
     ("The road to success is dotted with many tempting parking spaces.", "Will Rogers"),
-    ("Life is short. Smile while you still have teeth.", "Mallory Hopkins"),
     ("I used to think I was indecisive, but now I'm not so sure.", "Anonymous"),
-    ("The brain is a wonderful organ. It starts working the moment you get up and does not stop until you get into the office.", "Robert Frost"),
-    ("I find television very educational. Every time somebody turns on the set, I go into the other room and read a book.", "Groucho Marx"),
-    ("A bank is a place that will lend you money if you can prove that you don't need it.", "Bob Hope"),
-    ("The only mystery in life is why the kamikaze pilots wore helmets.", "Al McGuire"),
-    ("Behind every great person, there is a surprised in-law.", "Voltaire"),
     ("You miss 100% of the shots you don't take.", "Wayne Gretzky"),
     ("Whether you think you can or you think you can't, you're right.", "Henry Ford"),
     ("In the middle of every difficulty lies opportunity.", "Albert Einstein"),
     ("It always seems impossible until it's done.", "Nelson Mandela"),
     ("Be yourself; everyone else is already taken.", "Oscar Wilde"),
-    ("The only way to do great work is to love what you do.", "Steve Jobs"),
-    ("Life is what happens when you're busy making other plans.", "John Lennon"),
-    ("Yesterday is history, tomorrow is a mystery, but today is a gift. That is why it is called the present.", "Eleanor Roosevelt"),
-    ("The best time to plant a tree was 20 years ago. The second best time is now.", "Chinese Proverb"),
-    ("Keep your face always toward the sunshine, and shadows will fall behind you.", "Walt Whitman"),
-    ("The purpose of our lives is to be happy.", "Dalai Lama"),
-    ("In the end, it's not the years in your life that count. It's the life in your years.", "Abraham Lincoln"),
-    ("You've got to dance like there's nobody watching.", "William W. Purkey"),
-    ("The most wasted of all days is one without laughter.", "e.e. cummings"),
-    ("I haven't failed. I've just found 10,000 ways that won't work.", "Thomas Edison"),
-    ("Always remember that you are absolutely unique. Just like everyone else.", "Margaret Mead"),
-    ("Don't count the days. Make the days count.", "Muhammad Ali"),
-    ("The universe is under no obligation to make sense to you.", "Neil deGrasse Tyson"),
-    ("We are all just walking each other home.", "Ram Dass"),
-    ("Not all those who wander are lost.", "J.R.R. Tolkien"),
     ("Imagination is more important than knowledge.", "Albert Einstein"),
-    ("Turn your wounds into wisdom.", "Oprah Winfrey"),
-    ("The best revenge is massive success.", "Frank Sinatra"),
-    ("Spread love everywhere you go. Let no one ever come to you without leaving happier.", "Mother Teresa"),
-    ("To infinity, and beyond!", "Buzz Lightyear"),
-    ("The cure for boredom is curiosity. There is no cure for curiosity.", "Dorothy Parker"),
-    ("I am not afraid of storms, for I am learning how to sail my ship.", "Louisa May Alcott"),
-    ("Well-behaved women seldom make history.", "Laurel Thatcher Ulrich"),
-    ("Ask not what your country can do for you — ask what you can do for your country. Also, ask for snacks.", "Paraphrased JFK"),
     ("Logic will get you from A to B. Imagination will take you everywhere.", "Albert Einstein"),
 ]
+
+
+def _parse_fortune_block(block: str):
+    """Parse one fortune block into (text, author). Returns None to skip."""
+    block = block.strip()
+    if len(block) < 10:
+        return None
+
+    lines = block.split('\n')
+    # Attribution lines start with whitespace followed by '--'
+    attr_re = re.compile(r'^\s+--\s*')
+    attr_start = None
+    for i, line in enumerate(lines):
+        if attr_re.match(line):
+            attr_start = i
+            break
+
+    if attr_start is not None:
+        text_raw = ' '.join(lines[:attr_start]).strip()
+        author_raw = ' '.join(lines[attr_start:]).strip()
+        author = attr_re.sub('', author_raw).strip()
+        # Remove trailing comma / year cruft like ", 1645" or "(1955-2011)"
+        author = re.sub(r'[,\s]*\(\d{4}[^)]*\)\s*$', '', author).strip()
+        author = author.rstrip(',')
+    else:
+        text_raw = block
+        author = ""
+
+    # Normalise whitespace inside the text
+    text = ' '.join(text_raw.split())
+
+    # Skip very short, very long, or multi-line-heavy blocks
+    if len(text) < 12 or len(text) > 420:
+        return None
+
+    return (text, author)
+
+
+def _load_fortunes():
+    """Fetch fortune files from GitHub and return parsed (text, author) list."""
+    quotes = []
+    for url in _FORTUNE_URLS:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "popquote-app/2.0"}
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            for block in raw.split("\n%\n"):
+                entry = _parse_fortune_block(block)
+                if entry:
+                    quotes.append(entry)
+        except Exception as exc:
+            print(f"[fortune loader] could not fetch {url}: {exc}")
+
+    if len(quotes) < 20:
+        print("[fortune loader] falling back to built-in quotes")
+        return _FALLBACK_QUOTES
+
+    print(f"[fortune loader] loaded {len(quotes)} quotes from fortune-mod")
+    return quotes
+
+
+QUOTES = _load_fortunes()
 
 # ---------------------------------------------------------------------------
 # Pop-art color themes  (bg, dot overlay, panel, text-on-panel, meta/author)
